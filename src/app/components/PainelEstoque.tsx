@@ -3,19 +3,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
-import { Trash2, Search, ChevronLeft, ChevronRight, User, Filter } from "lucide-react";
+import { Search, ChevronLeft, ChevronRight, User, Filter } from "lucide-react";
 import { useState, useMemo } from "react";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "./ui/alert-dialog";
 import {
   Select,
   SelectContent,
@@ -24,22 +13,13 @@ import {
   SelectValue,
 } from "./ui/select";
 import { EditProdutoDialog } from "./EditProdutoDialog";
+import type { Produto } from "../types";
 
-export interface Produto {
-  id: string;
-  dataEntrada: string;
-  descricao: string;
-  notaFiscal: string;
-  quantitativo: number;
-  limiteEstoqueBaixo?: number;
-  responsavel?: string;
-  editado?: boolean;
-}
+export type { Produto } from "../types";
 
 interface PainelEstoqueProps {
   produtos: Produto[];
-  onDeleteProduto: (id: string) => void;
-  onEditProduto?: (id: string, produto: Produto) => void;
+  onEditProduto?: (id: string, produto: Produto) => Promise<void>;
 }
 
 const ITEMS_PER_PAGE = 30;
@@ -55,7 +35,7 @@ function parseLocalDate(dateStr: string): Date {
   return new Date(y, m - 1, d);
 }
 
-export function PainelEstoque({ produtos, onDeleteProduto, onEditProduto }: PainelEstoqueProps) {
+export function PainelEstoque({ produtos, onEditProduto }: PainelEstoqueProps) {
   const [searchTerm, setSearchTerm] = useState("");
   const [mesFiltro, setMesFiltro] = useState("todos");
   const [responsavelFiltro, setResponsavelFiltro] = useState("");
@@ -268,27 +248,6 @@ export function PainelEstoque({ produtos, onDeleteProduto, onEditProduto }: Pain
                           {onEditProduto && (
                             <EditProdutoDialog produto={produto} onEdit={onEditProduto} />
                           )}
-                          <AlertDialog>
-                            <AlertDialogTrigger asChild>
-                              <Button variant="ghost" size="sm">
-                                <Trash2 className="h-4 w-4 text-destructive" />
-                              </Button>
-                            </AlertDialogTrigger>
-                            <AlertDialogContent>
-                              <AlertDialogHeader>
-                                <AlertDialogTitle>Confirmar exclusão</AlertDialogTitle>
-                                <AlertDialogDescription>
-                                  O produto "{produto.descricao}" será removido permanentemente do inventário. Esta ação não pode ser desfeita.
-                                </AlertDialogDescription>
-                              </AlertDialogHeader>
-                              <AlertDialogFooter>
-                                <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                                <AlertDialogAction onClick={() => onDeleteProduto(produto.id)}>
-                                  Excluir
-                                </AlertDialogAction>
-                              </AlertDialogFooter>
-                            </AlertDialogContent>
-                          </AlertDialog>
                         </div>
                       </TableCell>
                     </TableRow>

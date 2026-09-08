@@ -13,26 +13,25 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "./ui/dialog";
-import { Produto } from "./PainelEstoque";
+import type { Produto } from "../types";
 
 interface EditProdutoDialogProps {
   produto: Produto;
-  onEdit: (id: string, produto: Produto) => void;
+  onEdit: (id: string, produto: Produto) => Promise<void>;
   disabled?: boolean;
 }
 
 export function EditProdutoDialog({ produto, onEdit, disabled }: EditProdutoDialogProps) {
   const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [formData, setFormData] = useState({
     dataEntrada: produto.dataEntrada,
     descricao: produto.descricao,
     notaFiscal: produto.notaFiscal,
-    quantitativo: produto.quantitativo.toString(),
     limiteEstoqueBaixo: (produto.limiteEstoqueBaixo || 10).toString(),
   });
 
-  const handleSave = () => {
-    const quantitativo = parseInt(formData.quantitativo);
+  const handleSave = async () => {
     const limiteEstoqueBaixo = parseInt(formData.limiteEstoqueBaixo);
     
     if (!formData.descricao.trim()) {
@@ -40,33 +39,29 @@ export function EditProdutoDialog({ produto, onEdit, disabled }: EditProdutoDial
       return;
     }
     
-    if (isNaN(quantitativo) || quantitativo < 0) {
-      toast.error('Quantitativo inválido');
-      return;
-    }
-
     if (isNaN(limiteEstoqueBaixo) || limiteEstoqueBaixo < 1) {
       toast.error('Limite de estoque baixo deve ser pelo menos 1');
       return;
     }
 
-    onEdit(produto.id, {
-      ...produto,
-      dataEntrada: formData.dataEntrada,
-      descricao: formData.descricao,
-      notaFiscal: formData.notaFiscal,
-      quantitativo,
-      limiteEstoqueBaixo,
-      editado: true,
-    });
-
-    setOpen(false);
-    toast.success('Produto editado com sucesso!');
+    setSaving(true);
+    try {
+      await onEdit(produto.id, {
+        ...produto,
+        dataEntrada: formData.dataEntrada,
+        descricao: formData.descricao,
+        notaFiscal: formData.notaFiscal,
+        limiteEstoqueBaixo,
+      });
+      setOpen(false);
+    } finally {
+      setSaving(false);
+    }
   };
 
-  if (disabled || produto.editado) {
+  if (disabled) {
     return (
-      <Button variant="ghost" size="sm" disabled title="Este produto já foi editado">
+      <Button variant="ghost" size="sm" disabled>
         <Pencil className="h-4 w-4 text-muted-foreground opacity-50" />
       </Button>
     );
@@ -83,7 +78,7 @@ export function EditProdutoDialog({ produto, onEdit, disabled }: EditProdutoDial
         <DialogHeader>
           <DialogTitle>Editar Produto</DialogTitle>
           <DialogDescription>
-            Atualize os detalhes do produto. Você pode editar este produto apenas uma vez.
+            Atualize os detalhes cadastrais. O saldo só pode ser alterado por movimentações.
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-4 py-4">
@@ -115,16 +110,6 @@ export function EditProdutoDialog({ produto, onEdit, disabled }: EditProdutoDial
             />
           </div>
           <div className="grid gap-2">
-            <Label htmlFor="edit-quantitativo">Quantitativo</Label>
-            <Input
-              id="edit-quantitativo"
-              type="number"
-              min="0"
-              value={formData.quantitativo}
-              onChange={(e) => setFormData({ ...formData, quantitativo: e.target.value })}
-            />
-          </div>
-          <div className="grid gap-2">
             <Label htmlFor="edit-limiteEstoqueBaixo">Limite de Estoque Baixo</Label>
             <Input
               id="edit-limiteEstoqueBaixo"
@@ -139,8 +124,8 @@ export function EditProdutoDialog({ produto, onEdit, disabled }: EditProdutoDial
           <Button variant="outline" onClick={() => setOpen(false)}>
             Cancelar
           </Button>
-          <Button onClick={handleSave}>
-            Salvar Alterações
+          <Button onClick={() => void handleSave()} disabled={saving}>
+            {saving ? "Salvando…" : "Salvar alterações"}
           </Button>
         </DialogFooter>
       </DialogContent>

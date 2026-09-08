@@ -1,315 +1,189 @@
-import { useState, useEffect } from "react";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
-import { PainelEstoque, Produto } from "./components/PainelEstoque";
-import { PainelMovimentacao, Movimentacao } from "./components/PainelMovimentacao";
-import { Toaster } from "./components/ui/sonner";
+import { useCallback, useEffect, useState } from "react";
+import type { Session } from "@supabase/supabase-js";
+import { AlertCircle, ClipboardList, LogOut, Package, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
-import { Package, ClipboardList, RefreshCw } from "lucide-react";
+import { LoginForm } from "./components/LoginForm";
+import { PainelEstoque } from "./components/PainelEstoque";
+import { PainelMovimentacao } from "./components/PainelMovimentacao";
 import { Button } from "./components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
+import { Toaster } from "./components/ui/sonner";
+import { isSupabaseConfigured, supabase } from "./lib/supabase";
+import type { Movimentacao, NovaMovimentacao, Produto } from "./types";
 import { api } from "./utils/api";
+import { normalizeDescription } from "./utils/inventory";
+
+function friendlyError(error: unknown): string {
+  const message = error instanceof Error ? error.message : "Erro inesperado.";
+  if (message.includes("Estoque insuficiente")) return message;
+  if (message.includes("duplicate key") || message.includes("products_owner_description_unique")) {
+    return "Já existe um produto com essa descrição.";
+  }
+  return message;
+}
 
 export default function App() {
+  const [session, setSession] = useState<Session | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [produtos, setProdutos] = useState<Produto[]>([]);
   const [movimentacoes, setMovimentacoes] = useState<Movimentacao[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [serverConnected, setServerConnected] = useState(false);
-
-  // Carregar dados do Supabase ao iniciar
-  useEffect(() => {
-    loadData();
-  }, []);
-
-  // Salvar backup no localStorage
-  useEffect(() => {
-    if (produtos.length > 0) {
-      localStorage.setItem('produtos_backup', JSON.stringify(produtos));
-    }
-  }, [produtos]);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState("");
 
   useEffect(() => {
-    if (movimentacoes.length > 0) {
-      localStorage.setItem('movimentacoes_backup', JSON.stringify(movimentacoes));
-    }
-  }, [movimentacoes]);
-
-  const loadLocalData = () => {
-    const storedProdutos = localStorage.getItem('produtos_backup');
-    const storedMovimentacoes = localStorage.getItem('movimentacoes_backup');
-    if (storedProdutos) setProdutos(JSON.parse(storedProdutos));
-    if (storedMovimentacoes) setMovimentacoes(JSON.parse(storedMovimentacoes));
-  };
-
-  const loadData = async () => {
-    setLoading(true);
-
-    // Verificação rápida de saúde do servidor (sem retry)
-    const online = await api.checkHealth();
-
-    if (!online) {
-      setServerConnected(false);
-      loadLocalData();
-      setLoading(false);
-      toast.warning('Servidor indisponível. Usando dados salvos localmente.');
+    if (!isSupabaseConfigured) {
+      setAuthLoading(false);
       return;
     }
 
+    void supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setAuthLoading(false);
+    });
+    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      setAuthLoading(false);
+    });
+    return () => data.subscription.unsubscribe();
+  }, []);
+
+  const loadData = useCallback(async () => {
+    if (!session) return;
+    setLoading(true);
+    setLoadError("");
     try {
-      const [produtosData, movimentacoesData] = await Promise.all([
+      const [productsData, movementsData] = await Promise.all([
         api.getProdutos(),
         api.getMovimentacoes(),
       ]);
-
-      setProdutos(produtosData);
-      setMovimentacoes(movimentacoesData);
-      setServerConnected(true);
-
-      if (produtosData.length > 0 || movimentacoesData.length > 0) {
-        toast.success('Dados sincronizados com o servidor!');
-      }
+      setProdutos(productsData);
+      setMovimentacoes(movementsData);
     } catch (error) {
-      console.warn('Falha ao carregar dados do servidor:', error);
-      setServerConnected(false);
-      loadLocalData();
-      toast.warning('Erro ao sincronizar. Usando dados locais.');
+      const message = friendlyError(error);
+      setLoadError(message);
+      toast.error("Não foi possível carregar os dados do servidor.");
     } finally {
       setLoading(false);
     }
-  };
+  }, [session]);
 
-  const handleAddMovimentacao = async (movimentacao: Omit<Movimentacao, 'id'>) => {
+  useEffect(() => {
+    void loadData();
+  }, [loadData]);
+
+  const handleAddMovimentacao = async (movimento: NovaMovimentacao) => {
+    const product = produtos.find(
+      item => normalizeDescription(item.descricao) === normalizeDescription(movimento.descricao),
+    );
+
     try {
-      const novaMovimentacao: Movimentacao = {
-        ...movimentacao,
-        id: Date.now().toString(),
-      };
-
-      // Salvar movimentação no Supabase
-      if (serverConnected) {
-        await api.saveMovimentacao(novaMovimentacao);
+      if (product) {
+        await api.registrarMovimentacao(product.id, movimento);
+      } else if (movimento.tipo === "entrada") {
+        await api.criarProdutoComEntrada(movimento);
+      } else {
+        throw new Error("Selecione um produto existente para registrar a saída.");
       }
-      setMovimentacoes([...movimentacoes, novaMovimentacao]);
-
-      // Atualizar estoque
-      const produtoExistente = produtos.find(
-        p => p.descricao.toLowerCase() === movimentacao.descricao.toLowerCase()
-      );
-
-      if (produtoExistente) {
-        const isEntrada = movimentacao.tipo === 'entrada';
-        const produtoAtualizado = {
-          ...produtoExistente,
-          quantitativo: isEntrada
-            ? produtoExistente.quantitativo + movimentacao.quantitativo
-            : Math.max(0, produtoExistente.quantitativo - movimentacao.quantitativo),
-          dataEntrada: isEntrada ? movimentacao.dataSaida : produtoExistente.dataEntrada,
-          notaFiscal: isEntrada && movimentacao.notaFiscal
-            ? movimentacao.notaFiscal
-            : produtoExistente.notaFiscal,
-          limiteEstoqueBaixo: isEntrada && movimentacao.limiteEstoqueBaixo
-            ? movimentacao.limiteEstoqueBaixo
-            : produtoExistente.limiteEstoqueBaixo,
-          responsavel: isEntrada && movimentacao.responsavel
-            ? movimentacao.responsavel
-            : produtoExistente.responsavel,
-        };
-
-        if (serverConnected) {
-          await api.saveProduto(produtoAtualizado);
-        }
-        
-        setProdutos(produtos.map(p => 
-          p.id === produtoExistente.id ? produtoAtualizado : p
-        ));
-      } else if (movimentacao.tipo === 'entrada') {
-        // Criar novo produto apenas se for entrada
-        const novoProduto: Produto = {
-          id: Date.now().toString(),
-          dataEntrada: movimentacao.dataSaida,
-          descricao: movimentacao.descricao,
-          notaFiscal: movimentacao.notaFiscal || 'Sem NF',
-          quantitativo: movimentacao.quantitativo,
-          limiteEstoqueBaixo: movimentacao.limiteEstoqueBaixo || 10,
-          responsavel: movimentacao.responsavel,
-        };
-
-        if (serverConnected) {
-          await api.saveProduto(novoProduto);
-        }
-        setProdutos([...produtos, novoProduto]);
-      }
-      
-      if (!serverConnected) {
-        toast.warning('Dados salvos localmente. Conecte ao servidor para sincronizar.');
-      }
+      await loadData();
+      toast.success(movimento.tipo === "entrada" ? "Entrada registrada." : "Saída registrada.");
     } catch (error) {
-      console.warn('Erro ao adicionar movimentação:', error);
-      toast.error('Erro ao salvar dados no servidor. Dados salvos localmente.');
+      const message = friendlyError(error);
+      toast.error(message);
+      throw error;
     }
   };
 
-  const handleEditMovimentacao = async (id: string, novoQuantitativo: number) => {
+  const handleCorrectMovimentacao = async (
+    id: string,
+    newQuantity: number,
+    reason: string,
+    responsible: string,
+  ) => {
     try {
-      const mov = movimentacoes.find(m => m.id === id);
-      if (!mov || mov.tipo !== 'entrada') return;
-
-      const diferenca = novoQuantitativo - mov.quantitativo;
-      if (diferenca === 0) return;
-
-      // Ajustar o estoque pela diferença
-      const produtoAfetado = produtos.find(
-        p => p.descricao.toLowerCase() === mov.descricao.toLowerCase()
-      );
-
-      if (produtoAfetado) {
-        const produtoAtualizado = {
-          ...produtoAfetado,
-          quantitativo: Math.max(0, produtoAfetado.quantitativo + diferenca),
-        };
-        if (serverConnected) await api.saveProduto(produtoAtualizado);
-        setProdutos(prev => prev.map(p => p.id === produtoAfetado.id ? produtoAtualizado : p));
-      }
-
-      const movAtualizada = { ...mov, quantitativo: novoQuantitativo };
-      if (serverConnected) await api.saveMovimentacao(movAtualizada);
-      setMovimentacoes(prev => prev.map(m => m.id === id ? movAtualizada : m));
-      toast.success('Movimentação atualizada e estoque ajustado.');
+      await api.corrigirMovimentacao(id, newQuantity, reason, responsible);
+      await loadData();
+      toast.success("Correção registrada com estorno auditável.");
     } catch (error) {
-      console.warn('Erro ao editar movimentação:', error);
-      toast.error('Erro ao editar movimentação.');
+      toast.error(friendlyError(error));
+      throw error;
     }
   };
 
-  const handleDeleteMovimentacao = async (id: string) => {
+  const handleEditProduto = async (_id: string, product: Produto) => {
     try {
-      const mov = movimentacoes.find(m => m.id === id);
-      if (!mov) return;
-
-      // Reverter o efeito da movimentação no estoque
-      const produtoAfetado = produtos.find(
-        p => p.descricao.toLowerCase() === mov.descricao.toLowerCase()
-      );
-
-      if (produtoAfetado) {
-        const produtoRevertido = {
-          ...produtoAfetado,
-          quantitativo: mov.tipo === 'entrada'
-            ? Math.max(0, produtoAfetado.quantitativo - mov.quantitativo)
-            : produtoAfetado.quantitativo + mov.quantitativo,
-        };
-
-        if (serverConnected) {
-          await api.saveProduto(produtoRevertido);
-        }
-        setProdutos(prev => prev.map(p => p.id === produtoAfetado.id ? produtoRevertido : p));
-      }
-
-      if (serverConnected) {
-        await api.deleteMovimentacao(id);
-      }
-      setMovimentacoes(prev => prev.filter(m => m.id !== id));
-      toast.success('Movimentação excluída e estoque atualizado.');
+      await api.atualizarProduto(product);
+      await loadData();
+      toast.success("Produto atualizado.");
     } catch (error) {
-      console.warn('Erro ao excluir movimentação:', error);
-      toast.error('Erro ao excluir movimentação.');
+      toast.error(friendlyError(error));
+      throw error;
     }
   };
 
-  const handleDeleteProduto = async (id: string) => {
-    try {
-      const produtoParaDeletar = produtos.find(p => p.id === id);
-      
-      if (serverConnected && produtoParaDeletar) {
-        await api.deleteProduto(id);
-      }
-      
-      setProdutos(produtos.filter(p => p.id !== id));
-      toast.success('Produto excluído com sucesso!');
-    } catch (error) {
-      console.warn('Erro ao excluir produto:', error);
-      toast.error('Erro ao excluir produto do servidor. Removido localmente.');
-      setProdutos(produtos.filter(p => p.id !== id));
-    }
-  };
+  if (authLoading) {
+    return <div className="min-h-screen grid place-items-center text-muted-foreground">Carregando…</div>;
+  }
 
-  const handleEditProduto = async (id: string, produtoEditado: Produto) => {
-    try {
-      if (serverConnected) {
-        await api.saveProduto(produtoEditado);
-      }
-      
-      setProdutos(produtos.map(p => p.id === id ? produtoEditado : p));
-    } catch (error) {
-      console.warn('Erro ao editar produto:', error);
-      toast.error('Erro ao salvar edição no servidor. Salvo localmente.');
-      setProdutos(produtos.map(p => p.id === id ? produtoEditado : p));
-    }
-  };
+  if (!session) {
+    return <LoginForm configurationMissing={!isSupabaseConfigured} />;
+  }
 
   return (
     <div className="min-h-screen bg-background">
-      <div className="border-b">
-        <div className="container mx-auto px-4 py-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-3xl font-bold">Sistema de Inventário</h1>
-              <p className="text-muted-foreground">
-                Gestão de Estoque e Movimentações
-              </p>
-            </div>
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-2">
-                <div className={`h-2 w-2 rounded-full ${serverConnected ? 'bg-green-500' : 'bg-red-500'}`} />
-                <span className="text-sm text-muted-foreground">
-                  {serverConnected ? 'Online' : 'Offline'}
-                </span>
-              </div>
-              <Button 
-                variant="outline" 
-                size="sm" 
-                onClick={loadData}
-                disabled={loading}
-              >
-                <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
-                Sincronizar
-              </Button>
-            </div>
+      <header className="border-b">
+        <div className="container mx-auto flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h1 className="text-3xl font-bold">Sistema de Inventário</h1>
+            <p className="text-muted-foreground">Gestão de estoque e movimentações</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => void loadData()} disabled={loading}>
+              <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} aria-hidden="true" />
+              Atualizar
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => void supabase.auth.signOut()}>
+              <LogOut className="mr-2 h-4 w-4" aria-hidden="true" />
+              Sair
+            </Button>
           </div>
         </div>
-      </div>
+      </header>
 
-      <div className="container mx-auto px-4 py-8">
+      <main className="container mx-auto px-4 py-8">
+        {loadError && (
+          <div role="alert" className="mb-6 flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+            <div>
+              <p className="font-medium">Sem conexão com o inventário</p>
+              <p>Os lançamentos estão bloqueados até a conexão ser restabelecida. {loadError}</p>
+            </div>
+          </div>
+        )}
+
         <Tabs defaultValue="estoque" className="space-y-6">
-          <TabsList className="grid w-full max-w-md mx-auto grid-cols-2">
+          <TabsList className="mx-auto grid w-full max-w-md grid-cols-2">
             <TabsTrigger value="estoque">
-              <Package className="h-4 w-4 mr-2" />
-              Estoque
+              <Package className="mr-2 h-4 w-4" aria-hidden="true" /> Estoque
             </TabsTrigger>
             <TabsTrigger value="movimentacao">
-              <ClipboardList className="h-4 w-4 mr-2" />
-              Movimentações
+              <ClipboardList className="mr-2 h-4 w-4" aria-hidden="true" /> Movimentações
             </TabsTrigger>
           </TabsList>
 
           <TabsContent value="estoque">
-            <PainelEstoque 
-              produtos={produtos} 
-              onDeleteProduto={handleDeleteProduto}
-              onEditProduto={handleEditProduto}
-            />
+            <PainelEstoque produtos={produtos} onEditProduto={handleEditProduto} />
           </TabsContent>
-
           <TabsContent value="movimentacao">
             <PainelMovimentacao
               onAddMovimentacao={handleAddMovimentacao}
-              onDeleteMovimentacao={handleDeleteMovimentacao}
-              onEditMovimentacao={handleEditMovimentacao}
+              onCorrectMovimentacao={handleCorrectMovimentacao}
               movimentacoes={movimentacoes}
               produtos={produtos}
+              disabled={Boolean(loadError) || loading}
             />
           </TabsContent>
         </Tabs>
-      </div>
-
+      </main>
       <Toaster />
     </div>
   );

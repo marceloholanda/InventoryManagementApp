@@ -7,33 +7,18 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { Badge } from "./ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
-import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
-  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
-} from "./ui/alert-dialog";
-import { Plus, Minus, User, ChevronLeft, ChevronRight, ChevronDown, Trash2, X, CalendarIcon, AlignLeft, Pencil } from "lucide-react";
+import { Plus, Minus, User, ChevronLeft, ChevronRight, ChevronDown, X, CalendarIcon, AlignLeft, Pencil } from "lucide-react";
 import { toast } from "sonner";
-import { Produto } from "./PainelEstoque";
+import type { Movimentacao, NovaMovimentacao, Produto } from "../types";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 
-export interface Movimentacao {
-  id: string;
-  dataSaida: string;
-  descricao: string;
-  quantitativo: number;
-  tipo: "entrada" | "saida";
-  notaFiscal?: string;
-  limiteEstoqueBaixo?: number;
-  responsavel?: string;
-}
-
 interface PainelMovimentacaoProps {
-  onAddMovimentacao: (movimentacao: Omit<Movimentacao, "id">) => void;
-  onDeleteMovimentacao: (id: string) => void;
-  onEditMovimentacao: (id: string, novoQuantitativo: number) => void;
+  onAddMovimentacao: (movimentacao: NovaMovimentacao) => Promise<void>;
+  onCorrectMovimentacao: (id: string, novoQuantitativo: number, motivo: string, responsavel: string) => Promise<void>;
   movimentacoes: Movimentacao[];
   produtos: Produto[];
+  disabled?: boolean;
 }
 
 const ITEMS_PER_PAGE = 20;
@@ -94,13 +79,16 @@ function FilterButton({ label, icon, active, activeLabel, onClear, children }: F
   );
 }
 
-export function PainelMovimentacao({ onAddMovimentacao, onDeleteMovimentacao, onEditMovimentacao, movimentacoes, produtos }: PainelMovimentacaoProps) {
+export function PainelMovimentacao({ onAddMovimentacao, onCorrectMovimentacao, movimentacoes, produtos, disabled = false }: PainelMovimentacaoProps) {
   const [formData, setFormData] = useState(emptyForm);
   const [currentPage, setCurrentPage] = useState(1);
 
   // Estado do dialog de edição
   const [editando, setEditando] = useState<Movimentacao | null>(null);
   const [editQtd, setEditQtd] = useState("");
+  const [editMotivo, setEditMotivo] = useState("");
+  const [editResponsavel, setEditResponsavel] = useState("");
+  const [saving, setSaving] = useState(false);
 
   // Filtros
   const [filtroResponsavel, setFiltroResponsavel] = useState("");
@@ -155,17 +143,27 @@ export function PainelMovimentacao({ onAddMovimentacao, onDeleteMovimentacao, on
   const abrirEdicao = (mov: Movimentacao) => {
     setEditando(mov);
     setEditQtd(mov.quantitativo.toString());
+    setEditMotivo("");
+    setEditResponsavel(mov.responsavel ?? "");
   };
 
-  const salvarEdicao = () => {
+  const salvarEdicao = async () => {
     const novoQtd = parseInt(editQtd);
     if (isNaN(novoQtd) || novoQtd <= 0) {
       toast.error("Quantitativo deve ser maior que zero");
       return;
     }
-    if (editando) {
-      onEditMovimentacao(editando.id, novoQtd);
+    if (!editMotivo.trim()) { toast.error("Informe o motivo da correção"); return; }
+    if (!editResponsavel.trim()) { toast.error("Informe o responsável pela correção"); return; }
+    if (!editando) return;
+    setSaving(true);
+    try {
+      await onCorrectMovimentacao(editando.id, novoQtd, editMotivo.trim(), editResponsavel.trim());
       setEditando(null);
+    } catch {
+      // A tela principal já apresenta a mensagem retornada pelo servidor.
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -183,7 +181,7 @@ export function PainelMovimentacao({ onAddMovimentacao, onDeleteMovimentacao, on
   }, [filtroDataInicio, filtroDataFim]);
 
   // ── Submit do formulário ──────────────────────────────────────────────────
-  const handleSubmit = (tipo: "entrada" | "saida") => {
+  const handleSubmit = async (tipo: "entrada" | "saida") => {
     if (!formData.dataSaida) { toast.error("Por favor, preencha a data"); return; }
     if (!formData.descricao.trim()) { toast.error("Por favor, preencha a descrição do produto"); return; }
     if (!formData.quantitativo.trim()) { toast.error("Por favor, preencha o quantitativo"); return; }
@@ -205,17 +203,23 @@ export function PainelMovimentacao({ onAddMovimentacao, onDeleteMovimentacao, on
         return;
       }
     }
-    onAddMovimentacao({
-      dataSaida: formData.dataSaida,
-      descricao: formData.descricao,
-      quantitativo,
-      tipo,
-      notaFiscal: tipo === "entrada" ? formData.notaFiscal : undefined,
-      limiteEstoqueBaixo: tipo === "entrada" ? parseInt(formData.limiteEstoqueBaixo) : undefined,
-      responsavel: formData.responsavel,
-    });
-    setFormData({ ...emptyForm, dataSaida: new Date().toISOString().split("T")[0] });
-    toast.success(tipo === "entrada" ? "Entrada registrada com sucesso!" : "Saída registrada com sucesso!");
+    setSaving(true);
+    try {
+      await onAddMovimentacao({
+        dataSaida: formData.dataSaida,
+        descricao: formData.descricao,
+        quantitativo,
+        tipo,
+        notaFiscal: tipo === "entrada" ? formData.notaFiscal : undefined,
+        limiteEstoqueBaixo: tipo === "entrada" ? parseInt(formData.limiteEstoqueBaixo) : undefined,
+        responsavel: formData.responsavel,
+      });
+      setFormData({ ...emptyForm, dataSaida: new Date().toISOString().split("T")[0] });
+    } catch {
+      // Mantém o formulário preenchido para a operadora corrigir ou tentar novamente.
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -266,7 +270,7 @@ export function PainelMovimentacao({ onAddMovimentacao, onDeleteMovimentacao, on
                   <Input id="respEntrada" className="pl-9" placeholder="Nome de quem está realizando a entrada" value={formData.responsavel} onChange={e => set("responsavel", e.target.value)} />
                 </div>
               </div>
-              <Button onClick={() => handleSubmit("entrada")} className="w-full">
+              <Button onClick={() => void handleSubmit("entrada")} className="w-full" disabled={disabled || saving}>
                 <Plus className="mr-2 h-4 w-4" /> Registrar Entrada
               </Button>
             </TabsContent>
@@ -309,7 +313,7 @@ export function PainelMovimentacao({ onAddMovimentacao, onDeleteMovimentacao, on
                   <Input id="respSaida" className="pl-9" placeholder="Nome de quem está solicitando o material" value={formData.responsavel} onChange={e => set("responsavel", e.target.value)} />
                 </div>
               </div>
-              <Button onClick={() => handleSubmit("saida")} className="w-full">
+              <Button onClick={() => void handleSubmit("saida")} className="w-full" disabled={disabled || saving}>
                 <Minus className="mr-2 h-4 w-4" /> Registrar Saída
               </Button>
             </TabsContent>
@@ -447,9 +451,12 @@ export function PainelMovimentacao({ onAddMovimentacao, onDeleteMovimentacao, on
                       <TableCell>
                         <Badge variant="outline" className={mov.tipo === "entrada"
                           ? "border-green-500 text-green-700 bg-green-50"
-                          : "border-red-400 text-red-700 bg-red-50"}>
-                          {mov.tipo === "entrada" ? "↑ Entrada" : "↓ Saída"}
+                          : mov.tipo === "saida"
+                            ? "border-red-400 text-red-700 bg-red-50"
+                            : "border-blue-400 text-blue-700 bg-blue-50"}>
+                          {mov.tipo === "entrada" ? "↑ Entrada" : mov.tipo === "saida" ? "↓ Saída" : "↺ Estorno"}
                         </Badge>
+                        {mov.corrigida && <Badge variant="secondary" className="ml-2">Corrigida</Badge>}
                       </TableCell>
                       <TableCell>
                         {mov.responsavel ? (
@@ -464,39 +471,15 @@ export function PainelMovimentacao({ onAddMovimentacao, onDeleteMovimentacao, on
                       <TableCell className="text-right font-medium">{mov.quantitativo}</TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-1">
-                          {/* Editar — entradas e saídas */}
-                          <Button variant="ghost" size="sm" onClick={() => abrirEdicao(mov)}>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => abrirEdicao(mov)}
+                            disabled={disabled || saving || mov.tipo === "estorno" || mov.corrigida}
+                            aria-label={`Corrigir movimentação de ${mov.descricao}`}
+                          >
                             <Pencil className="h-4 w-4 text-blue-600" />
                           </Button>
-
-                          <AlertDialog>
-                            <AlertDialogTrigger asChild>
-                              <Button variant="ghost" size="sm">
-                                <Trash2 className="h-4 w-4 text-destructive" />
-                              </Button>
-                            </AlertDialogTrigger>
-                            <AlertDialogContent>
-                              <AlertDialogHeader>
-                                <AlertDialogTitle>Excluir movimentação?</AlertDialogTitle>
-                                <AlertDialogDescription>
-                                  Esta ação irá excluir o registro de{" "}
-                                  <strong>{mov.tipo === "entrada" ? "entrada" : "saída"}</strong> de{" "}
-                                  <strong>{mov.quantitativo} unidade{mov.quantitativo !== 1 ? "s" : ""}</strong> de{" "}
-                                  <strong>{mov.descricao}</strong> e{" "}
-                                  <strong>reverterá o quantitativo no estoque</strong>. Esta ação não pode ser desfeita.
-                                </AlertDialogDescription>
-                              </AlertDialogHeader>
-                              <AlertDialogFooter>
-                                <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                                <AlertDialogAction
-                                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                                  onClick={() => onDeleteMovimentacao(mov.id)}
-                                >
-                                  Sim, excluir
-                                </AlertDialogAction>
-                              </AlertDialogFooter>
-                            </AlertDialogContent>
-                          </AlertDialog>
                         </div>
                       </TableCell>
                     </TableRow>
@@ -529,10 +512,9 @@ export function PainelMovimentacao({ onAddMovimentacao, onDeleteMovimentacao, on
       <Dialog open={!!editando} onOpenChange={open => { if (!open) setEditando(null); }}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>Editar Quantitativo</DialogTitle>
+            <DialogTitle>Corrigir lançamento</DialogTitle>
             <DialogDescription>
-              Corrija a quantidade da {editando?.tipo === "saida" ? "saída" : "entrada"} de <strong>{editando?.descricao}</strong>.
-              O estoque será ajustado automaticamente pela diferença.
+              O lançamento original será preservado. O sistema criará um estorno e um novo lançamento para <strong>{editando?.descricao}</strong>.
             </DialogDescription>
           </DialogHeader>
           {editando?.tipo === "saida" && (
@@ -556,6 +538,23 @@ export function PainelMovimentacao({ onAddMovimentacao, onDeleteMovimentacao, on
                 autoFocus
               />
             </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-motivo">Motivo da correção *</Label>
+              <Input
+                id="edit-motivo"
+                value={editMotivo}
+                onChange={event => setEditMotivo(event.target.value)}
+                placeholder="Ex.: quantidade digitada incorretamente"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-responsavel">Responsável pela correção *</Label>
+              <Input
+                id="edit-responsavel"
+                value={editResponsavel}
+                onChange={event => setEditResponsavel(event.target.value)}
+              />
+            </div>
             {editando && editQtd && !isNaN(parseInt(editQtd)) && parseInt(editQtd) !== editando.quantitativo && (
               <p className="text-xs text-muted-foreground">
                 Diferença:{" "}
@@ -567,7 +566,7 @@ export function PainelMovimentacao({ onAddMovimentacao, onDeleteMovimentacao, on
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditando(null)}>Cancelar</Button>
-            <Button onClick={salvarEdicao}>Salvar</Button>
+            <Button onClick={() => void salvarEdicao()} disabled={saving}>Registrar correção</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

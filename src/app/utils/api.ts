@@ -1,89 +1,132 @@
-import { projectId, publicAnonKey } from '../../../utils/supabase/info';
+import { z } from "zod";
+import { supabase } from "../lib/supabase";
+import type { Movimentacao, NovaMovimentacao, Produto } from "../types";
 
-const BASE_URL = `https://${projectId}.supabase.co/functions/v1/make-server-6a5c4630`;
+const productRowSchema = z.object({
+  id: z.string().uuid(),
+  description: z.string(),
+  invoice_number: z.string().nullable(),
+  quantity: z.number().int().nonnegative(),
+  low_stock_limit: z.number().int().positive(),
+  responsible: z.string().nullable(),
+  first_entry_date: z.string().nullable(),
+});
 
-const defaultHeaders = {
-  'Content-Type': 'application/json',
-  'Authorization': `Bearer ${publicAnonKey}`,
-};
+const movementRowSchema = z.object({
+  id: z.string().uuid(),
+  product_id: z.string().uuid(),
+  happened_on: z.string(),
+  description_snapshot: z.string(),
+  quantity: z.number().int().positive(),
+  movement_type: z.enum(["entrada", "saida", "estorno"]),
+  invoice_number: z.string().nullable(),
+  responsible: z.string(),
+  reason: z.string().nullable(),
+  corrected_at: z.string().nullable(),
+  related_movement_id: z.string().uuid().nullable(),
+});
 
-async function fetchWithRetry(url: string, options: RequestInit = {}, retries = 3): Promise<any> {
-  for (let attempt = 0; attempt < retries; attempt++) {
-    try {
-      const response = await fetch(url, {
-        ...options,
-        headers: { ...defaultHeaders, ...options.headers },
-      });
+function unwrap<T>(data: T | null, error: { message: string } | null): T {
+  if (error) throw new Error(error.message);
+  if (data === null) throw new Error("O servidor não retornou os dados esperados.");
+  return data;
+}
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`HTTP ${response.status}: ${errorText}`);
-      }
+function mapProduct(row: z.infer<typeof productRowSchema>): Produto {
+  return {
+    id: row.id,
+    dataEntrada: row.first_entry_date ?? "",
+    descricao: row.description,
+    notaFiscal: row.invoice_number ?? "",
+    quantitativo: row.quantity,
+    limiteEstoqueBaixo: row.low_stock_limit,
+    responsavel: row.responsible ?? "",
+  };
+}
 
-      return await response.json();
-    } catch (error) {
-      const isLast = attempt === retries - 1;
-      if (isLast) throw error;
-      // Espera progressiva: 1s, 2s, 3s
-      await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
-    }
-  }
+function mapMovement(row: z.infer<typeof movementRowSchema>): Movimentacao {
+  return {
+    id: row.id,
+    productId: row.product_id,
+    dataSaida: row.happened_on,
+    descricao: row.description_snapshot,
+    quantitativo: row.quantity,
+    tipo: row.movement_type,
+    notaFiscal: row.invoice_number ?? undefined,
+    responsavel: row.responsible,
+    motivo: row.reason ?? undefined,
+    corrigida: Boolean(row.corrected_at),
+    movimentoRelacionadoId: row.related_movement_id ?? undefined,
+  };
 }
 
 export const api = {
-  async checkHealth(): Promise<boolean> {
-    try {
-      await fetchWithRetry(`${BASE_URL}/health`, {}, 1);
-      return true;
-    } catch {
-      return false;
-    }
+  async getProdutos(): Promise<Produto[]> {
+    const { data, error } = await supabase
+      .from("products")
+      .select("id, description, invoice_number, quantity, low_stock_limit, responsible, first_entry_date")
+      .order("description");
+    return productRowSchema.array().parse(unwrap(data, error)).map(mapProduct);
   },
 
-  // ─── Produtos ────────────────────────────────────────────────────────────
-
-  async getProdutos(): Promise<any[]> {
-    const data = await fetchWithRetry(`${BASE_URL}/produtos`);
-    return data.produtos ?? [];
+  async getMovimentacoes(): Promise<Movimentacao[]> {
+    const { data, error } = await supabase
+      .from("inventory_movements")
+      .select("id, product_id, happened_on, description_snapshot, quantity, movement_type, invoice_number, responsible, reason, corrected_at, related_movement_id")
+      .order("created_at", { ascending: true });
+    return movementRowSchema.array().parse(unwrap(data, error)).map(mapMovement);
   },
 
-  async saveProduto(produto: any): Promise<any> {
-    return fetchWithRetry(`${BASE_URL}/produtos`, {
-      method: 'POST',
-      body: JSON.stringify(produto),
+  async registrarMovimentacao(productId: string, movimento: NovaMovimentacao): Promise<void> {
+    const { error } = await supabase.rpc("register_inventory_movement", {
+      p_product_id: productId,
+      p_movement_type: movimento.tipo,
+      p_quantity: movimento.quantitativo,
+      p_happened_on: movimento.dataSaida,
+      p_responsible: movimento.responsavel,
+      p_invoice_number: movimento.notaFiscal ?? null,
     });
+    if (error) throw new Error(error.message);
   },
 
-  async saveProdutosBatch(produtos: any[]): Promise<any> {
-    return fetchWithRetry(`${BASE_URL}/produtos/batch`, {
-      method: 'POST',
-      body: JSON.stringify({ produtos }),
+  async criarProdutoComEntrada(movimento: NovaMovimentacao): Promise<void> {
+    const { error } = await supabase.rpc("create_product_with_initial_stock", {
+      p_description: movimento.descricao,
+      p_quantity: movimento.quantitativo,
+      p_happened_on: movimento.dataSaida,
+      p_responsible: movimento.responsavel,
+      p_invoice_number: movimento.notaFiscal ?? null,
+      p_low_stock_limit: movimento.limiteEstoqueBaixo ?? 10,
     });
+    if (error) throw new Error(error.message);
   },
 
-  async deleteProduto(id: string): Promise<any> {
-    return fetchWithRetry(`${BASE_URL}/produtos/${id}`, {
-      method: 'DELETE',
+  async corrigirMovimentacao(
+    movementId: string,
+    newQuantity: number,
+    reason: string,
+    responsible: string,
+  ): Promise<void> {
+    const { error } = await supabase.rpc("correct_inventory_movement", {
+      p_movement_id: movementId,
+      p_new_quantity: newQuantity,
+      p_reason: reason,
+      p_responsible: responsible,
     });
+    if (error) throw new Error(error.message);
   },
 
-  // ─── Movimentações ───────────────────────────────────────────────────────
-
-  async getMovimentacoes(): Promise<any[]> {
-    const data = await fetchWithRetry(`${BASE_URL}/movimentacoes`);
-    return data.movimentacoes ?? [];
-  },
-
-  async saveMovimentacao(movimentacao: any): Promise<any> {
-    return fetchWithRetry(`${BASE_URL}/movimentacoes`, {
-      method: 'POST',
-      body: JSON.stringify(movimentacao),
-    });
-  },
-
-  async deleteMovimentacao(id: string): Promise<any> {
-    return fetchWithRetry(`${BASE_URL}/movimentacoes/${id}`, {
-      method: 'DELETE',
-    });
+  async atualizarProduto(produto: Produto): Promise<void> {
+    const { error } = await supabase
+      .from("products")
+      .update({
+        description: produto.descricao.trim(),
+        invoice_number: produto.notaFiscal.trim() || null,
+        low_stock_limit: produto.limiteEstoqueBaixo,
+        responsible: produto.responsavel.trim() || null,
+        first_entry_date: produto.dataEntrada || null,
+      })
+      .eq("id", produto.id);
+    if (error) throw new Error(error.message);
   },
 };
