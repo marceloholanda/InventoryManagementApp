@@ -147,6 +147,73 @@ export default function App() {
     }
   };
 
+  const handleEditMovimentacao = async (id: string, novoQuantitativo: number) => {
+    try {
+      const mov = movimentacoes.find(m => m.id === id);
+      if (!mov || mov.tipo !== 'entrada') return;
+
+      const diferenca = novoQuantitativo - mov.quantitativo;
+      if (diferenca === 0) return;
+
+      // Ajustar o estoque pela diferença
+      const produtoAfetado = produtos.find(
+        p => p.descricao.toLowerCase() === mov.descricao.toLowerCase()
+      );
+
+      if (produtoAfetado) {
+        const produtoAtualizado = {
+          ...produtoAfetado,
+          quantitativo: Math.max(0, produtoAfetado.quantitativo + diferenca),
+        };
+        if (serverConnected) await api.saveProduto(produtoAtualizado);
+        setProdutos(prev => prev.map(p => p.id === produtoAfetado.id ? produtoAtualizado : p));
+      }
+
+      const movAtualizada = { ...mov, quantitativo: novoQuantitativo };
+      if (serverConnected) await api.saveMovimentacao(movAtualizada);
+      setMovimentacoes(prev => prev.map(m => m.id === id ? movAtualizada : m));
+      toast.success('Movimentação atualizada e estoque ajustado.');
+    } catch (error) {
+      console.warn('Erro ao editar movimentação:', error);
+      toast.error('Erro ao editar movimentação.');
+    }
+  };
+
+  const handleDeleteMovimentacao = async (id: string) => {
+    try {
+      const mov = movimentacoes.find(m => m.id === id);
+      if (!mov) return;
+
+      // Reverter o efeito da movimentação no estoque
+      const produtoAfetado = produtos.find(
+        p => p.descricao.toLowerCase() === mov.descricao.toLowerCase()
+      );
+
+      if (produtoAfetado) {
+        const produtoRevertido = {
+          ...produtoAfetado,
+          quantitativo: mov.tipo === 'entrada'
+            ? Math.max(0, produtoAfetado.quantitativo - mov.quantitativo)
+            : produtoAfetado.quantitativo + mov.quantitativo,
+        };
+
+        if (serverConnected) {
+          await api.saveProduto(produtoRevertido);
+        }
+        setProdutos(prev => prev.map(p => p.id === produtoAfetado.id ? produtoRevertido : p));
+      }
+
+      if (serverConnected) {
+        await api.deleteMovimentacao(id);
+      }
+      setMovimentacoes(prev => prev.filter(m => m.id !== id));
+      toast.success('Movimentação excluída e estoque atualizado.');
+    } catch (error) {
+      console.warn('Erro ao excluir movimentação:', error);
+      toast.error('Erro ao excluir movimentação.');
+    }
+  };
+
   const handleDeleteProduto = async (id: string) => {
     try {
       const produtoParaDeletar = produtos.find(p => p.id === id);
@@ -232,8 +299,10 @@ export default function App() {
           </TabsContent>
 
           <TabsContent value="movimentacao">
-            <PainelMovimentacao 
+            <PainelMovimentacao
               onAddMovimentacao={handleAddMovimentacao}
+              onDeleteMovimentacao={handleDeleteMovimentacao}
+              onEditMovimentacao={handleEditMovimentacao}
               movimentacoes={movimentacoes}
               produtos={produtos}
             />
