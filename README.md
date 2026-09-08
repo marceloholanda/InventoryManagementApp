@@ -55,9 +55,9 @@ $env:LEGACY_SUPABASE_ANON_KEY="CHAVE_PUBLICA_ANTIGA"
 npm run migrate:legacy
 ```
 
-O comando cria `migration-report.json` e não grava no banco. A importação é bloqueada se houver produtos duplicados, movimentações órfãs ou divergência entre o saldo gravado e o saldo calculado pelo histórico.
+O comando cria `migration-report.json` e não grava no banco. A importação é bloqueada se houver produtos duplicados, movimentações órfãs ou saídas sem uma entrada anterior correspondente. Quando o saldo legado divergir, o saldo de destino é recalculado exclusivamente pelo histórico preservado.
 
-Depois de conferir um relatório sem divergências:
+Depois de conferir o relatório:
 
 ```powershell
 $env:NEW_SUPABASE_URL="https://PROJECT.supabase.co"
@@ -71,21 +71,23 @@ A chave de serviço só deve ser usada nesse processo local e removida do termin
 
 ## Cloudflare Pages
 
-Conecte o repositório GitHub em **Workers & Pages** e configure:
+O projeto usa upload direto no Cloudflare Pages. Publique um preview com:
 
-- Build command: `npm run build`
-- Build output directory: `dist`
-- Variáveis: `VITE_SUPABASE_URL` e `VITE_SUPABASE_PUBLISHABLE_KEY`
+```powershell
+npm run build
+npx wrangler pages deploy dist --project-name inventory-management-app --branch preview
+```
 
-Pull requests geram deployments de preview. Promova para produção somente depois de validar os totais migrados e os fluxos de entrada, saída e correção.
+O preview atual fica em `https://preview.inventory-management-app.pages.dev`. Promova para produção somente depois de validar os totais migrados e os fluxos de entrada, saída e correção.
 
 ## Desativar o backend antigo
 
 Depois da migração e da validação do preview:
 
 1. Remova a Edge Function antiga `make-server-6a5c4630` do projeto Supabase.
-2. Rotacione a chave de serviço utilizada pela função antiga.
-3. Confirme que somente as tabelas novas e as RPCs autorizadas permanecem acessíveis.
+2. Remova a tabela legada `kv_store_6a5c4630` e seus índices.
+3. Revogue a chave secreta usada na migração em **Settings > API Keys**.
+4. Confirme que somente as tabelas novas e as RPCs autorizadas permaneçam acessíveis.
 
 ## Verificação
 
